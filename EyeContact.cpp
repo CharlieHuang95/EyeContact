@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <ctime>
+#include <regex>
 #include <opencv2/ml.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -15,7 +16,7 @@
 #include "FaceTracking.cpp"
 #include "EyeTracking.cpp"
 #include "PupilTracking.cpp"
-#include "SVM.cpp"
+#include "ClassificationModeler.cpp"
 #include "Utility.cpp"
 
 // Control the techniques used with the following
@@ -31,16 +32,17 @@
 
 // Extract eyes from 
 #define IS_TRAINING 0
+
 // 0 is SVM
 // 1 is Bayes Classifier
-#define MODEL 1
+// #define MODEL 1
 
 #define RES_WIDTH 320
 #define RES_HEIGHT 240
 
 const std::string path_to_classifiers = "C:\\Program Files\\OpenCV\\2.0\\opencv\\sources\\data\\haarcascades\\";
 
-void run_algorithm() {
+void run_algorithm(ImagesDataWrapper images) {
 	BodyDetector* body_detector = NULL;
 	FaceDetector* face_detector = NULL;
 	EyeDetector* eye_detector = NULL;
@@ -91,31 +93,43 @@ void run_algorithm() {
 	cap.set(CV_CAP_PROP_FRAME_HEIGHT, RES_HEIGHT);
 	cap.set(CV_CAP_PROP_FPS, 30);
 
-	cv::Mat frame, eye_tpl;
-	cv::Rect eye_bb;
+	// Saves the camera input
+	cv::Mat frame;
+
+	// Saves bounding boxes of the captured objects
 	std::vector<cv::Rect> bodies, faces, eyes;
+
+	// Saves a representation of the eye pupil
 	std::vector<cv::Vec3f> circles;
-	std::cout << circles.size();
 
 	CvSVM svm;
-	svm.load("eye_looking_svm"); // saving
+	svm.load("eye_looking_svm");
 	CvNormalBayesClassifier bayes_classifier;
 	bayes_classifier.load("bayes_classifier");
+	GenericClassifier* classifier;
+	classifier = new BayesClassifier();
+	classifier->load("bayes_classifier_v1");
 
+	// Record the number of frames that have been recorded
 	int num_frames = 0;
+	// Record the start time
 	std::clock_t start = std::clock();
 
-	while (cv::waitKey(10) != 'q')
-	{
-		if (IS_TRAINING) {
-			if (!load_image_color(frame)) {
+	while (cv::waitKey(10) != 'q') {
+		ImageData my_image;
+		if (IS_TRAINING == -1) {
+			if (!images.has_image()) {
 				break;// Read the file
+			} else {
+				my_image = images.get_image();
+				frame = cv::imread(my_image.full_path);
 			}
 		} else {
 			cap >> frame;
 		}
 		if (frame.empty()) {
 			std::cout << "There was an error with loading the image.";
+			cv::waitKey(1000);
 			break;
 		}
 
@@ -127,16 +141,17 @@ void run_algorithm() {
 		for (int i = 0; i < bodies.size(); ++i) {
 			cv::rectangle(frame, bodies[i], CV_RGB(0, 255, 0));
 		}
+
 		// Detect faces
 		face_detector->detect_faces(frame, faces);
 
-		for (int i = 0; i < faces.size(); i++)
-		{
-			// For each face, detect the eyes
-			// Assume that the eyes are located in the top portion
+		for (int i = 0; i < faces.size(); i++) {
+
+			// Detect eyes. Assume that the eyes are located in the top portion
 			cv::Rect top_portion = cv::Rect(faces[i].x, faces[i].y + faces[i].height / 10, faces[i].width, faces[i].height / 2);
 			cv::Mat face = frame(top_portion);
-			cv::imshow("video2", face);
+			//cv::imshow("video2", face);
+
 			int min_size = face.rows / 5;
 			eye_detector->detect_eyes(face, eyes);
 			cv::rectangle(frame, faces[i], CV_RGB(0, 255, 0));
@@ -152,16 +167,17 @@ void run_algorithm() {
 				cv::cvtColor(just_eye, just_eye, CV_BGR2GRAY);
 				resize(just_eye, just_eye, cv::Size(30, 10));
 				if (IS_TRAINING == -1) {
+					std::string directory = my_image.is_match ? "Match" : "NonMatch";
 					std::string filename = "C:\\Users\\Charlie\\source\\repos\\EyeContact_Thesis\\EyeContact_Thesis\\TrainingSet\\Eyes\\"
-											+ std::to_string(cur_image - 1) + "_" + std::to_string(num_eye++) +".jpg";
+											+ directory + "\\" + my_image.filename + "_" + std::to_string(num_eye++) +".jpg";
 					cv::imwrite(filename, just_eye);
 				}
-				cv::Mat temp = flatten_image_1D(just_eye);
+				cv::Mat temp = flatten_image_mat(just_eye);
 				cv::Scalar color(0, 255, 0);
 
 				if (IS_TRAINING == 0) {
 					//float response = svm.predict(temp);
-					float response2 = bayes_classifier.predict(temp);
+					float response2 = classifier->predict(temp);
 					//std::cout << response;
 					std::cout << response2;
 					if (response2 == 1) {
@@ -184,7 +200,7 @@ void run_algorithm() {
 			}
 		}
 		num_frames++;
-		double fps = (double)CLOCKS_PER_SEC / (std::clock() - start);
+		double fps = (double) CLOCKS_PER_SEC / (std::clock() - start);
 		start = std::clock();
 		putText(frame, ftos(fps, 3), cv::Point(10, 25), 0, 1, cv::Scalar(255, 255, 255));
 		cv::imshow("video", frame);
@@ -198,11 +214,59 @@ void run_algorithm() {
 
 int main(int argc, char** argv)
 {
-	if (IS_TRAINING == 1) {
-		train_bayes_classifier();
-		train_svm();
+	ImagesDataWrapper images;
+	if (IS_TRAINING == -1) {
+		std::vector<std::string> match =
+			collect_files("C:\\Users\\Charlie\\source\\repos\\EyeContact_Thesis\\EyeContact_Thesis\\TrainingSet\\Faces\\Match");
+		std::vector<std::string> non_match =
+			collect_files("C:\\Users\\Charlie\\source\\repos\\EyeContact_Thesis\\EyeContact_Thesis\\TrainingSet\\Faces\\NonMatch");
+		std::regex file_regex("([a-zA-Z0-9_]*)\\.[a-zA-Z0-9_]*");
+		for (std::string s : match) {
+			std::smatch m;
+			std::regex_search(s, m, file_regex);
+			if (m.size() > 0) {
+				std::ssub_match base_sub_match = m[0];
+				std::string base = base_sub_match.str();
+				images.add_images(ImageData(s, base, true));
+				//std::cout << base << '\n';
+			}
+		}
+		for (std::string s : non_match) {
+			std::smatch m;
+			std::regex_search(s, m, file_regex);
+			if (m.size() > 0) {
+				std::ssub_match base_sub_match = m[0];
+				std::string base = base_sub_match.str();
+				images.add_images(ImageData(s, base, false));
+				//std::cout << base << '\n';
+			}
+		}
+
+		// Make copies of the relevant parts of the image
+		run_algorithm(images);
+	} else if (IS_TRAINING == 1) {
+		// Prepare training data
+		TrainingData training_data;
+		std::vector<std::string> match =
+			collect_files("C:\\Users\\Charlie\\source\\repos\\EyeContact_Thesis\\EyeContact_Thesis\\TrainingSet\\Eyes\\Match");
+		std::vector<std::string> non_match =
+			collect_files("C:\\Users\\Charlie\\source\\repos\\EyeContact_Thesis\\EyeContact_Thesis\\TrainingSet\\Eyes\\NonMatch");
+		for (std::string s : match) {
+			cv::Mat training_image = cv::imread(s);
+			training_data.add_testcase(training_image, true);
+		}
+		for (std::string s : non_match) {
+			cv::Mat training_image = cv::imread(s);
+			training_data.add_testcase(training_image, false);
+		}
+
+		GenericClassifier* classifier;
+		classifier = new BayesClassifier();
+		classifier->train(training_data);
+		classifier->save("bayes_classifier_v1");
+		//train_svm();
 	} else {
-		run_algorithm();
+		run_algorithm(images);
 	}
 	return 0;
 }

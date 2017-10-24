@@ -7,7 +7,7 @@
 
 class PupilDetector {
 public:
-	virtual void detect_pupil(cv::Mat frame, std::vector<cv::Vec3f>& pupils) { std::cout << "WTF"; };
+	virtual void detect_pupil(cv::Mat frame, std::vector<cv::Vec3f>& pupils) {};
 };
 
 class PupilHoughDetector : public PupilDetector {
